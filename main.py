@@ -1,3 +1,5 @@
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras import layers
 import tensorflow_datasets as tfds
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
@@ -9,9 +11,6 @@ import os, random
 import PIL.Image
 import pathlib
 import PIL
-
-
-TF_ENABLE_ONEDNN_OPTS=0
 
 
 # importiamo il dataset flower_photos
@@ -49,20 +48,32 @@ plt.show()
 
 # analisi shape immagini
 
-h_shape = np.array([])
-w_shape = np.array([])
+# 1. Create a TensorFlow dataset from paths
+def get_image_dims(path):
+    img = tf.io.read_file(path)
+    img = tf.image.decode_image(img, channels=3, expand_animations=False)
+    return tf.shape(img)[:2]  # Returns (height, width)
 
+# Get all image paths
+image_paths = []
 for classe in os.listdir(data_dir):
-    if not classe.endswith('.txt'): 
-        for i in os.listdir(os.path.join(data_dir, classe)):
-            path = os.path.join(data_dir, classe, i)
-            img = mpimg.imread(path)
-            h, w = img.shape[:2]
-            h_shape = np.append(h_shape, h)
-            w_shape = np.append(w_shape, w) 
+    if not classe.endswith('.txt'):
+        class_dir = os.path.join(data_dir, classe)
+        image_paths.extend([os.path.join(class_dir, f) for f in os.listdir(class_dir) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
 
+# Convert to TensorFlow dataset
+path_ds = tf.data.Dataset.from_tensor_slices(image_paths)
+dims_ds = path_ds.map(get_image_dims, num_parallel_calls=tf.data.AUTOTUNE)
 
-df_shape = pd.DataFrame({"h" : h_shape, "w": w_shape})
+# Get all dimensions
+sizes = list(dims_ds.as_numpy_iterator())
+h_shape, w_shape = zip(*sizes)
+
+# Create DataFrame
+df_shape = pd.DataFrame({"h": h_shape, "w": w_shape})
+print(df_shape.describe())
+
 
 #print(df_shape.head())
 sns.jointplot(data=df_shape, x="w", y="h", kind="scatter")
@@ -94,10 +105,26 @@ plt.show()
 full_data = tf.keras.utils.image_dataset_from_directory(
     data_dir,
     image_size= (256,256),
+    batch_size=128,
     crop_to_aspect_ratio = True,
     seed=42
 )
 
+'''
+# Recommended augmentation (add this before model definition)
+data_augmentation = tf.keras.Sequential([
+    layers.RandomFlip("horizontal"),  # Safe for flowers
+    layers.RandomRotation(0.05),     # ±18° (more natural for flowers)
+    layers.RandomZoom(0.1, 0.1),     # Slight zoom (10% max)
+    layers.RandomContrast(0.1),      # Mild contrast adjustment
+    layers.RandomBrightness(0.1),    # Subtle brightness changes
+    layers.RandomTranslation(        # Gentle shifts
+        height_factor=0.05,
+        width_factor=0.05,
+        fill_mode='reflect'          # Better edge handling
+    ),
+])
+'''
 
 train_size = int(len(full_data) * 0.8)
 val_size = int(len(full_data) * 0.15)
@@ -114,6 +141,38 @@ print(f" train data: {len(train_data)}")
 print(f" test data: {len(test_data)}")
 print(f" val data: {len(val_data)}")
 
+'''
+# ★★★ ADD PREPROCESSING PIPELINES HERE ★★★
+def preprocess_train(image, label):
+    image = data_augmentation(image, training=True)  # Augment only training
+    image = tf.cast(image, tf.float32) / 255.0       # Normalize
+    return image, label
+
+def preprocess_val_test(image, label):
+    image = tf.cast(image, tf.float32) / 255.0       # Only normalize
+    return image, label
+
+
+# Apply preprocessing
+train_data = train_data.map(preprocess_train, num_parallel_calls=tf.data.AUTOTUNE)
+val_data = val_data.map(preprocess_val_test, num_parallel_calls=tf.data.AUTOTUNE)
+test_data = test_data.map(preprocess_val_test, num_parallel_calls=tf.data.AUTOTUNE)
+
+
+# Check augmented training samples
+for images, _ in train_data.take(1):
+    plt.imshow(images[0].numpy())
+    plt.title("Augmented Training Sample")
+    plt.show()
+
+# Check raw validation samples
+for images, _ in val_data.take(1):
+    plt.imshow(images[0].numpy())
+    plt.title("Unaugmented Validation Sample")
+    plt.show()
+'''
+
+# optimize 
 train_data_prefetched = train_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
 test_data_prefetched = test_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
 val_data_prefetched = val_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
@@ -121,15 +180,21 @@ val_data_prefetched = val_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
 
 # crea modello
 model = tf.keras.Sequential([
-    tf.keras.layers.Rescaling(1./255, input_shape=(256,256,3)),
-    tf.keras.layers.Conv2D(32, 3, activation="relu"),
+    tf.keras.layers.Input(shape=(256, 256, 3)),
+    # data_augmentation,
+    tf.keras.layers.Rescaling(1./255),
+    tf.keras.layers.Conv2D(64, 3, activation="relu"),
     tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Dropout(0.1),
-    tf.keras.layers.Conv2D(16, 3, activation="relu"),
+    tf.keras.layers.Conv2D(32, 3, activation="relu"),
     tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Dropout(0.2),
+    # tf.keras.layers.Conv2D(32, 3, activation="relu"),
+    # tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(32),
+    tf.keras.layers.Dense(64),
+    tf.keras.layers.Dropout(0.2),
+    tf.keras.layers.Dense(16),
     tf.keras.layers.Dense(len(full_data.class_names), activation="softmax")
 ])
 
@@ -141,10 +206,17 @@ model.compile(
     metrics = ["accuracy"]
 )
 
+# Addestra il modello
+early_stopping = EarlyStopping(
+    monitor ='val_accuracy',                        # Monitora l'accuratezza di validazione
+    patience = 5,                                   # Numero di epoche senza miglioramento prima di fermare l'addestramento
+    restore_best_weights=True                       # Ripristina i pesi del modello alla migliore versione trovata
+)
+
 training = model.fit(
     train_data_prefetched,
     validation_data = val_data_prefetched,
-    epochs = 15
+    epochs = 20
 )
 
 
