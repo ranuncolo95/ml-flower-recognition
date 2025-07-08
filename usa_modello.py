@@ -26,7 +26,7 @@ full_data = tf.keras.utils.image_dataset_from_directory(
     seed=42
 )
 
-class_names =full_data.class_names
+class_names = full_data.class_names
 
 # Dividiamo il dataset in training 70%, validation15%, test15%
 train_size = int(len(full_data) * 0.80) #4200

@@ -1,9 +1,10 @@
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, TensorBoard
 from tensorflow.keras import layers
 import tensorflow_datasets as tfds
 import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import tensorflow as tf
+from defs.defs import *
 import seaborn as sns
 import pandas as pd
 import numpy as np
@@ -12,6 +13,14 @@ import PIL.Image
 import pathlib
 import PIL
 
+
+root_dir = os.getcwd()
+os.chdir(root_dir)                                        
+data_dir = os.path.join(root_dir, "datasets", "flower_photos","flower_photos")
+
+batch_size = 32                         # Numero di immagini per batch che analizza per aggiornare i pesi del modello
+img_height = 256                         # Altezza delle immagini
+img_width = 256                         # Larghezza delle immagini
 
 # importiamo il dataset flower_photos
 dataset_url = "https://storage.googleapis.com/download.tensorflow.org/example_images/flower_photos.tgz"
@@ -25,7 +34,6 @@ data_dir = tf.keras.utils.get_file(origin=dataset_url,
 # conteggio di quante immagini ci sono in ogni classe 
 
 counts = {}
-data_dir = os.path.join(os.getcwd(), "datasets", "flower_photos","flower_photos")
 
 for folder in os.listdir(data_dir):
     path = os.path.join(data_dir, folder)
@@ -104,10 +112,10 @@ plt.show()
 # caricato in full_data il dataset di immagini compreso di classi
 full_data = tf.keras.utils.image_dataset_from_directory(
     data_dir,
-    image_size= (256,256),
-    batch_size=128,
+    image_size = (img_height, img_width),
+    batch_size = batch_size,
     crop_to_aspect_ratio = True,
-    seed=42
+    seed = 42
 )
 
 '''
@@ -177,14 +185,15 @@ train_data_prefetched = train_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE
 test_data_prefetched = test_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
 val_data_prefetched = val_data.cache().prefetch(buffer_size=tf.data.AUTOTUNE)
 
+tf.keras.backend.clear_session()        
 
 # crea modello
 model = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(256, 256, 3)),
+    tf.keras.layers.Input(shape=(img_height, img_width, 3)),
     # data_augmentation,
     tf.keras.layers.Rescaling(1./255),
-    tf.keras.layers.Conv2D(64, 3, activation="relu"),
-    tf.keras.layers.MaxPooling2D(),
+    #tf.keras.layers.Conv2D(64, 3, activation="relu"),
+    #tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Dropout(0.1),
     tf.keras.layers.Conv2D(32, 3, activation="relu"),
     tf.keras.layers.MaxPooling2D(),
@@ -192,7 +201,7 @@ model = tf.keras.Sequential([
     # tf.keras.layers.Conv2D(32, 3, activation="relu"),
     # tf.keras.layers.MaxPooling2D(),
     tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(64),
+    #tf.keras.layers.Dense(64),
     tf.keras.layers.Dropout(0.2),
     tf.keras.layers.Dense(16),
     tf.keras.layers.Dense(len(full_data.class_names), activation="softmax")
@@ -206,6 +215,8 @@ model.compile(
     metrics = ["accuracy"]
 )
 
+tensorboard_callback = TensorBoard()  # Callback per TensorBoard
+
 # Addestra il modello
 early_stopping = EarlyStopping(
     monitor ='val_accuracy',                        # Monitora l'accuratezza di validazione
@@ -213,21 +224,56 @@ early_stopping = EarlyStopping(
     restore_best_weights=True                       # Ripristina i pesi del modello alla migliore versione trovata
 )
 
-training = model.fit(
-    train_data_prefetched,
-    validation_data = val_data_prefetched,
-    epochs = 20
+
+callbacks = [early_stopping, TrainingMonitor(), tensorboard_callback]
+
+history = model.fit(
+    train_data_prefetched,                                # Dati di addestramento
+    epochs = 1,                                    # Numero di epoche per l'addestramento
+    validation_data=val_data_prefetched,           # Dati di validazione
+    callbacks = callbacks,                     # Callback per l'early stopping
+    shuffle=False                                   # Non mescola i dati durante l'addestramento
 )
 
+# analyze model's training
+analyze_training(history)
 
 # salva il modello
-model.save("model_flower_256x256.keras")
+model.save("model_flower_256x256_light.keras")
 
 # valuto il modello
+# Creo le variabili di appoggio per i dati di addestramento e validazione
+training_loss = history.history['loss']
+training_accuracy = history.history['accuracy']
+validation_loss = history.history['val_loss']
+validation_accuracy = history.history['val_accuracy']
 
-pd.DataFrame(training.history)[["accuracy", "val_accuracy"]].plot()
-plt.title("accuracy e val accuracy per epoch")
-plt.xlabel("epoch")
-plt.ylabel("accuracy")
+
+# Convert history to DataFrame
+history_df = pd.DataFrame(history.history)
+
+# Create figure with subplots
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+
+# Plot Loss on first subplot
+history_df[["loss", "val_loss"]].plot(
+    ax=ax1,
+    color=['blue', 'orange']
+)
+ax1.set_title('Training and Validation Loss')
+ax1.set_xlabel('Epoch')
+ax1.set_ylabel('Loss')
+ax1.grid(True)
+
+# Plot Accuracy on second subplot
+history_df[["accuracy", "val_accuracy"]].plot(
+    ax=ax2,
+    color=['green', 'red']
+)
+ax2.set_title('Training and Validation Accuracy')
+ax2.set_xlabel('Epoch')
+ax2.set_ylabel('Accuracy')
+ax2.grid(True)
+
+plt.tight_layout()
 plt.show()
-

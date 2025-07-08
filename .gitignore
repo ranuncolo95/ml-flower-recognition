@@ -1,3 +1,5 @@
 /datasets
 /model_flower.keras
 /model_flower_256x256.keras
+model_flower_256x256_light.keras
+defs/__pycache__/defs.cpython-312.pyc
